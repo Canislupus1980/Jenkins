@@ -1,0 +1,79 @@
+pipeline {
+    agent {
+        label "master"
+    }
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5', artifactNumToKeepStr: '5'))
+    }
+    parameters{
+        choice(name: 'SERVICE', choices: ['*'], description: 'Set Service')
+        choice(name: 'CONTOUR', choices: ['dev'], description: 'Set Contour')
+    }
+    stages {
+        stage ("Start") {
+            stages {
+                stage ('Notification') {
+                    steps {
+                        script{
+                            wrap([$class: 'BuildUser']) {
+                            env.JOB_USER = sh(script: 'echo "${BUILD_USER}"', returnStdout: true).trim()
+                            }
+                        }
+                        // sh "telegramBotnemesis 'YELLOW' 'Start' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"
+                    }
+                }
+                stage('Build') {
+                    agent {
+                        docker {
+                            image "amazoncorretto:20-alpine3.18"                                                    
+                            label "splinter"
+                            args "-u root:root --name amaz -v /var/run/docker.sock:/var/run/docker.sock --network host"
+                        }
+                    }                   
+                    steps {
+                        git branch:'$BRANCH', credentialsId: '*', url: '*'
+                        
+                        sh "apk add docker"
+                        sh "chmod +x mvnw"
+                        sh "./mvnw -B spring-boot:build-image -Dmaven.test.skip=true"
+                        sh "sleep 3600"                         
+                    }                          
+                }
+                stage('Docker Build & Push') {
+                    steps {
+                        script {
+                            withDockerRegistry(url: '*') {
+                                sh "docker tag *:0.0.1-SNAPSHOT *"
+                                sh "docker push *"
+                            }
+                        }
+                    }
+                    post { 
+                        always {                           
+          				    cleanWs()
+                        }                                                       
+                    }       
+                }                                                                                                                                       
+            }                                                                               
+        
+            // post {
+            //     success {                
+            //         sh "telegramBotnemesis 'GREEN' 'success' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"            
+            //     }                      
+	        //     failure {
+	        //         sh "telegramBotnemesis 'RED' 'Failed' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"
+	        //     }
+            // }            
+        }
+        // stage ("Deploy") {
+        //     steps {
+        //         //updateGitlabCommitStatus name: "Deploy-Dev", state: "running"
+        //         build job: '*', parameters: [
+        //             string(name: 'SERVICE', value: "*"), 
+        //             string(name: 'CONTOUR', value: "${CONTOUR}"),
+        //             string(name: 'BRANCH_BUILD', value: "${BRANCH}") 
+        //         ]
+        //     }                                  
+        // }            
+    }   
+}
