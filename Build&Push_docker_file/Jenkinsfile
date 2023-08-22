@@ -1,13 +1,38 @@
+// ========================================================================== //
+//                        J e n k i n s   P i p e l i n e
+// ========================================================================== //
+import groovy.json.JsonSlurper
+
+def getRemoteHost(String name='', String stage='', boolean get_user=false) {
+    def json = '''{
+        "nemesis-back": { "dev": {"ip": "192.168.16.51", "user": "devops" },}
+    }'''
+    def result = new JsonSlurper().parseText(json)["${name}"]["${stage}"]
+    if (get_user == true) { 
+       return result.user
+    }
+    return result.ip
+}
+
 pipeline {
     agent {
         label "master"
+    }
+    tools {
+        maven 'Maven-3.9.4'
+        jdk 'OpenJDK'
+    }
+    environment {
+        DOCKER_REGISTRY = "***"
+        DOCKER_IMAGE = "***"
+        DOCKER_TAG = "***"        
     }
     options {
         buildDiscarder(logRotator(numToKeepStr: '5', artifactNumToKeepStr: '5'))
     }
     parameters{
-        choice(name: 'SERVICE', choices: ['*'], description: 'Set Service')
-        choice(name: 'CONTOUR', choices: ['dev'], description: 'Set Contour')
+        choice(name: 'SERVICE', choices: ['***'], description: 'Set Service')
+        choice(name: 'CONTOUR', choices: ['***'], description: 'Set Contour')
     }
     stages {
         stage ("Start") {
@@ -19,61 +44,62 @@ pipeline {
                             env.JOB_USER = sh(script: 'echo "${BUILD_USER}"', returnStdout: true).trim()
                             }
                         }
-                        // sh "telegramBotnemesis 'YELLOW' 'Start' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"
+                        sh "telegramBot* 'YELLOW' 'Start' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"
                     }
                 }
                 stage('Build') {
-                    agent {
-                        docker {
-                            image "amazoncorretto:20-alpine3.18"                                                    
-                            label "splinter"
-                            args "-u root:root --name amaz -v /var/run/docker.sock:/var/run/docker.sock --network host"
-                        }
-                    }                   
                     steps {
-                        git branch:'$BRANCH', credentialsId: '*', url: '*'
-                        
-                        sh "apk add docker"
+                        git branch:'$BRANCH', credentialsId: '***', url: 'https://***'
+                        sh "echo 'Build docker image release...'"
                         sh "chmod +x mvnw"
-                        sh "./mvnw -B spring-boot:build-image -Dmaven.test.skip=true"
-                        sh "sleep 3600"                         
+                        sh "./mvnw spring-boot:build-image -Dmaven.test.skip=true"                                           
                     }                          
-                }
-                stage('Docker Build & Push') {
+                }                
+                stage('Docker Push') {
                     steps {
                         script {
-                            withDockerRegistry(url: '*') {
-                                sh "docker tag *:0.0.1-SNAPSHOT *"
-                                sh "docker push *"
+                            withDockerRegistry(url: "$DOCKER_REGISTRY") {
+                                sh "echo 'Deploying docker image release...'"
+                                sh "docker tag nemesis-back:0.0.1-SNAPSHOT ${env.DOCKER_REGISTRY}/${env.DOCKER_IMAGE}:${env.DOCKER_TAG}"
+                                sh "docker push ${env.DOCKER_REGISTRY}/${env.DOCKER_IMAGE}:${env.DOCKER_TAG}"
                             }
                         }
                     }
                     post { 
                         always {                           
-          				    cleanWs()
+          			cleanWs()
                         }                                                       
                     }       
-                }                                                                                                                                       
-            }                                                                               
-        
-            // post {
-            //     success {                
-            //         sh "telegramBotnemesis 'GREEN' 'success' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"            
-            //     }                      
-	        //     failure {
-	        //         sh "telegramBotnemesis 'RED' 'Failed' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"
-	        //     }
-            // }            
-        }
-        // stage ("Deploy") {
-        //     steps {
-        //         //updateGitlabCommitStatus name: "Deploy-Dev", state: "running"
-        //         build job: '*', parameters: [
-        //             string(name: 'SERVICE', value: "*"), 
-        //             string(name: 'CONTOUR', value: "${CONTOUR}"),
-        //             string(name: 'BRANCH_BUILD', value: "${BRANCH}") 
-        //         ]
-        //     }                                  
-        // }            
+                }
+                stage('Deploy image and run docker-compose') {
+                    steps {
+                        script {
+                            env.REMOTE_IP=getRemoteHost("${SERVICE}", "${CONTOUR}")
+                            env.REMOTE_USER=getRemoteHost("${SERVICE}", "${CONTOUR}", true)
+                            env.REMOTE_PORT="22"                            
+                            
+                            withCredentials([sshUserPrivateKey(credentialsId: 'nginxbynex', keyFileVariable: 'KEY', passphraseVariable: '', usernameVariable: ''), usernamePassword(credentialsId: 'mirrorgit_bitbucket', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]) {
+                                sh "ssh -i ${KEY} -p ${REMOTE_PORT} -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} 'sudo dnf update -y && sudo dnf install -y curl git'"   
+                                sh "ssh -i ${KEY} -p ${REMOTE_PORT} -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} 'sudo rm -rf /home/${REMOTE_USER}/${SERVICE}/back/'"
+                                sh "ssh -i ${KEY} -p ${REMOTE_PORT} -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} 'sudo mkdir -p /home/${REMOTE_USER}/${SERVICE}/back/'"
+                                sh "ssh -i ${KEY} -p ${REMOTE_PORT} -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} 'cd /home/${REMOTE_USER}/${SERVICE}/back/ && sudo git clone https://***'"
+                           
+                                sh "ssh -i ${KEY} -p ${REMOTE_PORT} -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} 'cd /home/${REMOTE_USER}/${SERVICE}/back/nemesis/Build-nemesis-back/ && sudo chmod +x ./docker.sh && sudo ./docker.sh'"                                   
+
+                                sh "ssh -i ${KEY} -p ${REMOTE_PORT} -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} 'cd /home/${REMOTE_USER}/${SERVICE}/back/nemesis/Build-nemesis-back/ && sudo docker-compose up -d'"
+                            }
+                        }
+                    }                                                                                  
+                }           
+            }
+            post {
+                success {                
+                    sh "telegramBotnemesis 'GREEN' 'success' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"            
+                }                      
+	            failure {
+	                sh "telegramBotnemesis 'RED' 'Failed' 'Build' '${JOB_NAME}' '${BRANCH}|${JOB_USER}|${RUN_DISPLAY_URL}' '${CONTOUR}'"
+	            }
+            }                    
+        }                 
     }   
 }
